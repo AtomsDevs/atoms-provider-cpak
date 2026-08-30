@@ -161,6 +161,9 @@ namespace Atoms {
             if (normalized_name == "" || normalized_name.length > 80)
                 throw new CoreError.INVALID_DATA ("environment name must contain 1 to 80 characters");
 
+            operation_progress ("Installing %s with cpak".printf (
+                distribution.display_name ()
+            ));
             var install = yield run (
                 { "discover", "install", distribution.origin },
                 null,
@@ -168,6 +171,7 @@ namespace Atoms {
             );
             ensure_success (install);
 
+            operation_progress ("Creating persistent environment storage");
             var create = yield run ({
                 "environment",
                 "create",
@@ -182,6 +186,7 @@ namespace Atoms {
             var root = parser.get_root ();
             if (root == null || root.get_node_type () != NodeType.OBJECT)
                 throw invalid_response ("cpak returned an invalid environment");
+            operation_progress ("Reading environment permissions");
             return yield environment_from_json (root.get_object (), cancellable);
         }
 
@@ -201,6 +206,7 @@ namespace Atoms {
                 "shell",
                 "--environment",
                 environment.id,
+                "--terminal",
                 "--command",
                 selected_command
             })

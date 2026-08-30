@@ -37,6 +37,7 @@ private void test_environments_and_processes () {
                 "/bin/bash",
                 { "-i" }
             );
+            assert ("--terminal" in argv);
             assert (argv[argv.length - 2] == "--");
             assert (argv[argv.length - 1] == "-i");
             selected_provider.list_processes.begin (environments[0], null, (process_object, process_result) => {
@@ -117,6 +118,44 @@ private void test_policy_round_trip () {
     assert (async_error == null);
 }
 
+private void test_creation_progress () {
+    async_error = null;
+    var progress = new Gee.ArrayList<string> ();
+    ulong handler = selected_provider.operation_progress.connect ((message) => {
+        progress.add (message);
+    });
+    var distribution = new Distribution (
+        "cpak",
+        "github.com/containerpak/ubuntu",
+        "Ubuntu",
+        "26.04",
+        "Ubuntu test distribution",
+        "github.com/containerpak/ubuntu",
+        ""
+    );
+    selected_provider.create_environment.begin (
+        distribution,
+        "Ubuntu test",
+        null,
+        (object, result) => {
+            try {
+                var environment = selected_provider.create_environment.end (result);
+                assert (environment.id == "ubuntu-test");
+            } catch (Error error) {
+                async_error = error;
+            }
+            loop.quit ();
+        }
+    );
+    loop.run ();
+    selected_provider.disconnect (handler);
+    assert (async_error == null);
+    assert (progress.size == 3);
+    assert (progress[0].has_prefix ("Installing Ubuntu"));
+    assert (progress[1] == "Creating persistent environment storage");
+    assert (progress[2] == "Reading environment permissions");
+}
+
 private void test_invalid_store () {
     async_error = null;
     GLib.Environment.set_variable (
@@ -156,6 +195,7 @@ int main (string[] args) {
     }
     Test.add_func ("/atoms/provider-cpak/distributions", test_distributions);
     Test.add_func ("/atoms/provider-cpak/environments", test_environments_and_processes);
+    Test.add_func ("/atoms/provider-cpak/creation-progress", test_creation_progress);
     Test.add_func ("/atoms/provider-cpak/policy-round-trip", test_policy_round_trip);
     Test.add_func ("/atoms/provider-cpak/invalid-store", test_invalid_store);
     return Test.run ();

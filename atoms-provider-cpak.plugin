@@ -5,5 +5,5 @@ Name=cpak
 Description=Persistent cpak environments
 Authors=Atoms Developers
 Copyright=Copyright 2026 Atoms Developers
-X-Atoms-Provider-ABI=1
+X-Atoms-Provider-ABI=2
 X-Atoms-Provider-Id=cpak

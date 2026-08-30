@@ -61,7 +61,10 @@ namespace Atoms {
             var root_object = store_root.get_object ();
             if (!root_object.has_member ("Distributions"))
                 throw invalid_response ("cpak Store has no Distributions category");
-            var category = root_object.get_object_member ("Distributions");
+            unowned Json.Node? category_node = root_object.get_member ("Distributions");
+            if (category_node == null || category_node.get_node_type () != NodeType.OBJECT)
+                throw invalid_response ("cpak Store has an invalid Distributions category");
+            var category = category_node.get_object ();
 
             var catalog_result = yield run ({ "discover", "list" }, null, cancellable);
             ensure_success (catalog_result);
@@ -72,9 +75,12 @@ namespace Atoms {
             var catalog_object = catalog_root.get_object ();
             if (!catalog_object.has_member ("packages"))
                 throw invalid_response ("cpak discovery catalog has no packages");
+            unowned Json.Node? packages_node = catalog_object.get_member ("packages");
+            if (packages_node == null || packages_node.get_node_type () != NodeType.ARRAY)
+                throw invalid_response ("cpak discovery catalog has invalid packages");
 
             var packages = new HashMap<string, Json.Object> ();
-            foreach (var node in catalog_object.get_array_member ("packages").get_elements ()) {
+            foreach (var node in packages_node.get_array ().get_elements ()) {
                 if (node.get_node_type () != NodeType.OBJECT)
                     continue;
                 var package = node.get_object ();

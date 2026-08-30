@@ -4,6 +4,7 @@ private MainLoop loop;
 private Error? async_error;
 private ProviderRegistry registry;
 private Provider selected_provider;
+private string valid_store_index;
 
 private void test_distributions () {
     async_error = null;
@@ -115,9 +116,31 @@ private void test_policy_round_trip () {
     assert (async_error == null);
 }
 
+private void test_invalid_store () {
+    async_error = null;
+    GLib.Environment.set_variable (
+        "ATOMS_CPAK_STORE_INDEX",
+        GLib.Environment.get_variable ("ATOMS_CPAK_INVALID_STORE_INDEX"),
+        true
+    );
+    selected_provider.list_distributions.begin (null, (object, result) => {
+        try {
+            selected_provider.list_distributions.end (result);
+        } catch (Error error) {
+            async_error = error;
+        }
+        loop.quit ();
+    });
+    loop.run ();
+    GLib.Environment.set_variable ("ATOMS_CPAK_STORE_INDEX", valid_store_index, true);
+    assert (async_error != null);
+    assert (async_error.message == "cpak Store has an invalid Distributions category");
+}
+
 int main (string[] args) {
     Test.init (ref args);
     loop = new MainLoop ();
+    valid_store_index = GLib.Environment.get_variable ("ATOMS_CPAK_STORE_INDEX");
     string path = GLib.Environment.get_variable ("ATOMS_PROVIDER_PATH");
     string[] paths = { path };
     registry = new ProviderRegistry (paths);
@@ -133,5 +156,6 @@ int main (string[] args) {
     Test.add_func ("/atoms/provider-cpak/distributions", test_distributions);
     Test.add_func ("/atoms/provider-cpak/environments", test_environments_and_processes);
     Test.add_func ("/atoms/provider-cpak/policy-round-trip", test_policy_round_trip);
+    Test.add_func ("/atoms/provider-cpak/invalid-store", test_invalid_store);
     return Test.run ();
 }

@@ -18,7 +18,8 @@ atoms_provider_cpak_module = shared_module(
     libsoup_dep
   ],
   install: true,
-  install_dir: provider_dir
+  install_dir: provider_dir,
+  install_rpath: get_option('prefix') / get_option('libdir')
 )
 
 provider_metadata = configure_file(

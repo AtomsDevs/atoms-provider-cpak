@@ -205,6 +205,8 @@ namespace Atoms {
                 selected_command
             })
                 values.add (value);
+            if (arguments.length > 0)
+                values.add ("--");
             foreach (var argument in arguments)
                 values.add (argument);
 

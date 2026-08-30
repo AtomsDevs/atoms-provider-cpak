@@ -1,0 +1,14 @@
+{
+  "Distributions": {
+    "github.com/containerpak/ubuntu": {
+      "name": "Ubuntu",
+      "version": "26.04"
+    }
+  },
+  "Utilities": {
+    "github.com/containerpak/other": {
+      "name": "Other",
+      "version": "1"
+    }
+  }
+}

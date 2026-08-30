@@ -37,6 +37,7 @@ private void test_environments_and_processes () {
                 "/bin/bash",
                 { "-i" }
             );
+            assert (argv[argv.length - 2] == "--");
             assert (argv[argv.length - 1] == "-i");
             selected_provider.list_processes.begin (environments[0], null, (process_object, process_result) => {
                 try {

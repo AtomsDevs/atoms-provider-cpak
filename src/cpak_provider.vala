@@ -701,6 +701,11 @@ namespace Atoms {
 
         private static string[] resolve_command_prefix () {
             string? configured = GLib.Environment.get_variable ("CPAK_BINARY");
+            if (GLib.Environment.get_variable ("CPAK_SYSTEM_BROKER_SOCKET") != null &&
+                GLib.Environment.get_variable ("CPAK_SYSTEM_BROKER_TOKEN_FILE") != null) {
+                string? broker = GLib.Environment.find_program_in_path ("cpak-host");
+                return broker == null ? new string[0] : new string[] { broker };
+            }
             if (FileUtils.test ("/.flatpak-info", FileTest.EXISTS)) {
                 string? spawn = GLib.Environment.find_program_in_path ("flatpak-spawn");
                 if (spawn == null)
@@ -727,6 +732,16 @@ namespace Atoms {
             }
 
             string binary = configured ?? GLib.Environment.find_program_in_path ("cpak") ?? "";
+            if (binary == "") {
+                string local_binary = GLib.Path.build_filename (
+                    GLib.Environment.get_home_dir (),
+                    ".local",
+                    "bin",
+                    "cpak"
+                );
+                if (FileUtils.test (local_binary, FileTest.IS_EXECUTABLE))
+                    binary = local_binary;
+            }
             return binary == "" ? new string[0] : new string[] { binary };
         }
     }

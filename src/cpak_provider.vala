@@ -700,6 +700,9 @@ namespace Atoms {
         }
 
         private static string[] resolve_command_prefix () {
+            string? test_binary = GLib.Environment.get_variable ("ATOMS_CPAK_TEST_BINARY");
+            if (test_binary != null)
+                return new string[] { test_binary };
             string? configured = GLib.Environment.get_variable ("CPAK_BINARY");
             if (GLib.Environment.get_variable ("CPAK_SYSTEM_BROKER_SOCKET") != null &&
                 GLib.Environment.get_variable ("CPAK_SYSTEM_BROKER_TOKEN_FILE") != null) {

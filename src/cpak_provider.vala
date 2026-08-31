@@ -30,6 +30,38 @@ namespace Atoms {
         private const string STORE_INDEX =
             "https://raw.githubusercontent.com/Containerpak/store/main/index.json";
         private const size_t MAX_STORE_BYTES = 8 * 1024 * 1024;
+        private const size_t MAX_APPLICATION_BYTES = 64 * 1024;
+        private const size_t MAX_ICON_BYTES = 1024 * 1024;
+        private const string UPDATE_SCRIPT =
+            "set -e; " +
+            "if command -v apt-get >/dev/null 2>&1; then " +
+            "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y; " +
+            "elif command -v dnf >/dev/null 2>&1; then dnf upgrade --refresh -y; " +
+            "elif command -v pacman >/dev/null 2>&1; then pacman -Syu --noconfirm; " +
+            "elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive update; " +
+            "elif command -v apk >/dev/null 2>&1; then apk update && apk upgrade; " +
+            "else echo 'Atoms could not identify this distribution package manager.' >&2; exit 127; fi";
+        private const string APPLICATION_LIST_SCRIPT =
+            "for directory in /usr/share/applications /usr/local/share/applications \"$HOME/.local/share/applications\"; do " +
+            "[ -d \"$directory\" ] || continue; " +
+            "find \"$directory\" -maxdepth 1 -type f -name '*.desktop' -size -65537c -print; " +
+            "done | LC_ALL=C sort -u | head -n 128 | while IFS= read -r path; do " +
+            "[ -f \"$path\" ] && [ ! -L \"$path\" ] || continue; " +
+            "printf '%s\\t' \"$(printf '%s' \"$path\" | base64 | tr -d '\\n')\"; " +
+            "base64 \"$path\" | tr -d '\\n'; printf '\\n'; done";
+        private const string APPLICATION_ICON_SCRIPT =
+            "desktop=$1; [ -f \"$desktop\" ] && [ ! -L \"$desktop\" ] || exit 0; " +
+            "icon=$(sed -n 's/^Icon[[:space:]]*=[[:space:]]*//p' \"$desktop\" | head -n 1); " +
+            "[ -n \"$icon\" ] || exit 0; candidate=''; " +
+            "case \"$icon\" in /*) case \"$icon\" in " +
+            "/usr/share/icons/*.png|/usr/local/share/icons/*.png|/usr/share/pixmaps/*.png|\"$HOME\"/.local/share/icons/*.png|\"$HOME\"/.local/share/pixmaps/*.png) candidate=$icon;; esac;; *) " +
+            "for root in /usr/share/icons /usr/local/share/icons /usr/share/pixmaps \"$HOME/.local/share/icons\" \"$HOME/.local/share/pixmaps\"; do " +
+            "[ -d \"$root\" ] || continue; " +
+            "candidate=$(find \"$root\" -type f \\( -name \"$icon.png\" -o -name \"$icon\" \\) -size -1048577c -print -quit 2>/dev/null); " +
+            "[ -n \"$candidate\" ] && break; done;; esac; " +
+            "[ -f \"$candidate\" ] && [ ! -L \"$candidate\" ] || exit 0; " +
+            "case \"$candidate\" in *.png) ;; *) exit 0;; esac; " +
+            "printf 'png\\t'; base64 \"$candidate\" | tr -d '\\n'; printf '\\n'";
         private string[] command_prefix;
         private HashMap<string, string> icons;
 
@@ -67,6 +99,8 @@ namespace Atoms {
             var category = category_node.get_object ();
 
             var catalog_result = yield run ({ "discover", "list" }, null, cancellable);
+            if (store_is_busy (catalog_result))
+                catalog_result = yield run ({ "discover", "list" }, null, cancellable);
             ensure_success (catalog_result);
             var catalog = parse (catalog_result.stdout_text, "cpak discovery catalog");
             var catalog_root = catalog.get_root ();
@@ -192,7 +226,8 @@ namespace Atoms {
 
         public string[] shell_argv (Environment environment,
                                     string command,
-                                    string[] arguments) throws Error {
+                                    string[] arguments,
+                                    bool terminal) throws Error {
             require_environment (environment);
             string selected_command = command.strip ();
             if (selected_command == "")
@@ -205,12 +240,13 @@ namespace Atoms {
                 "environment",
                 "shell",
                 "--environment",
-                environment.id,
-                "--terminal",
-                "--command",
-                selected_command
+                environment.id
             })
                 values.add (value);
+            if (terminal)
+                values.add ("--terminal");
+            values.add ("--command");
+            values.add (selected_command);
             if (arguments.length > 0)
                 values.add ("--");
             foreach (var argument in arguments)
@@ -220,6 +256,15 @@ namespace Atoms {
             for (int i = 0; i < values.size; i++)
                 argv[i] = values[i];
             return argv;
+        }
+
+        public string[] update_argv (Environment environment) throws Error {
+            return shell_argv (
+                environment,
+                "/bin/sh",
+                { "-lc", UPDATE_SCRIPT },
+                false
+            );
         }
 
         public async Environment update_policy (
@@ -250,6 +295,87 @@ namespace Atoms {
             if (response_root == null || response_root.get_node_type () != NodeType.OBJECT)
                 throw invalid_response ("cpak returned an invalid environment");
             return yield environment_from_json (response_root.get_object (), cancellable);
+        }
+
+        public async ArrayList<DesktopApplication> list_applications (
+            Environment environment,
+            Cancellable? cancellable = null
+        ) throws Error {
+            require_environment (environment);
+            var result = yield run ({
+                "environment",
+                "shell",
+                "--environment",
+                environment.id,
+                "--command",
+                "/bin/sh",
+                "--",
+                "-c",
+                APPLICATION_LIST_SCRIPT
+            }, null, cancellable);
+            ensure_success (result);
+
+            var applications = new ArrayList<DesktopApplication> ();
+            foreach (var line in result.stdout_text.split ("\n")) {
+                if (line == "")
+                    continue;
+                string[] fields = line.split ("\t");
+                if (fields.length != 2)
+                    continue;
+                uint8[] path_data = Base64.decode (fields[0]);
+                uint8[] content_data = Base64.decode (fields[1]);
+                if (path_data.length == 0 || content_data.length == 0 ||
+                    content_data.length > MAX_APPLICATION_BYTES)
+                    continue;
+                string path = (string) path_data;
+                string content = (string) content_data;
+                if (path.length != path_data.length ||
+                    content.length != content_data.length ||
+                    !valid_application_path (path) ||
+                    !content.validate ())
+                    continue;
+                var application = parse_application (environment, path, content);
+                if (application != null)
+                    applications.add (application);
+            }
+            applications.sort ((a, b) => strcmp (a.name, b.name));
+            return applications;
+        }
+
+        public async void set_application_exported (
+            Environment environment,
+            DesktopApplication application,
+            bool exported,
+            Cancellable? cancellable = null
+        ) throws Error {
+            require_environment (environment);
+            if (application.provider_id != id || !valid_application_path (application.id))
+                throw new CoreError.INVALID_DATA ("application belongs to another provider");
+
+            if (!exported) {
+                remove_application_export (environment, application);
+                application.exported = false;
+                return;
+            }
+
+            DesktopApplication? current = null;
+            var applications = yield list_applications (environment, cancellable);
+            foreach (var candidate in applications) {
+                if (candidate.id == application.id) {
+                    current = candidate;
+                    break;
+                }
+            }
+            if (current == null)
+                throw new CoreError.NOT_FOUND ("application is no longer installed");
+
+            string icon_name = yield export_application_icon (
+                environment,
+                current,
+                cancellable
+            );
+            write_application_export (environment, current, icon_name);
+            application.exported = true;
         }
 
         public async ArrayList<ProcessInfo> list_processes (
@@ -366,6 +492,8 @@ namespace Atoms {
             Cancellable? cancellable
         ) throws Error {
             string environment_id = required_string (object, "id");
+            if (!valid_identifier (environment_id))
+                throw invalid_response ("cpak returned an invalid environment identifier");
             string origin = required_string (object, "origin");
             Json.Object policy = object.has_member ("policy")
                 ? object.get_object_member ("policy")
@@ -411,12 +539,14 @@ namespace Atoms {
                 display = has_display_permission (policy),
                 usb = boolean_member (policy, "deviceUsb"),
                 input = boolean_member (policy, "deviceInput"),
+                audio = has_audio_permission (policy),
                 host_commands = has_host_actions (policy),
                 can_network = boolean_member (ceiling, "network"),
                 can_home = has_home_permission (ceiling),
                 can_display = has_display_permission (ceiling),
                 can_usb = boolean_member (ceiling, "deviceUsb"),
                 can_input = boolean_member (ceiling, "deviceInput"),
+                can_audio = has_audio_permission (ceiling),
                 can_host_commands = has_host_actions (ceiling)
             };
         }
@@ -447,6 +577,15 @@ namespace Atoms {
                 "deviceInput",
                 selected.input && boolean_member (ceiling, "deviceInput")
             );
+            foreach (var member in new string[] {
+                "socketPulseAudio",
+                "deviceAlsa"
+            }) {
+                raw.set_boolean_member (
+                    member,
+                    selected.audio && boolean_member (ceiling, member)
+                );
+            }
             if (selected.host_commands && ceiling.has_member ("hostActions")) {
                 raw.set_array_member (
                     "hostActions",
@@ -485,6 +624,245 @@ namespace Atoms {
             foreach (var node in source.get_elements ())
                 copy.add_element (node.copy ());
             return copy;
+        }
+
+        private DesktopApplication? parse_application (Environment environment,
+                                                       string path,
+                                                       string content) {
+            try {
+                var key_file = new KeyFile ();
+                key_file.load_from_data (content, content.length, KeyFileFlags.NONE);
+                if (!key_file.has_group ("Desktop Entry") ||
+                    key_file.get_string ("Desktop Entry", "Type") != "Application" ||
+                    optional_boolean (key_file, "Hidden") ||
+                    optional_boolean (key_file, "NoDisplay") ||
+                    optional_boolean (key_file, "Terminal"))
+                    return null;
+                string name = key_file.get_locale_string ("Desktop Entry", "Name");
+                string command = key_file.get_string ("Desktop Entry", "Exec");
+                string description = optional_locale_string (key_file, "Comment");
+                string icon = optional_string (key_file, "Icon");
+                if (name.strip () == "" || command.strip () == "" ||
+                    name.length > 240 || description.length > 1024 ||
+                    command.length > 4096 || contains_control (name) ||
+                    contains_control (description) || contains_control (command))
+                    return null;
+                return new DesktopApplication (
+                    id,
+                    path,
+                    name,
+                    description,
+                    icon,
+                    command,
+                    FileUtils.test (
+                        application_export_path (environment, path),
+                        FileTest.IS_REGULAR
+                    )
+                );
+            } catch (Error error) {
+                debug ("Could not parse environment application %s: %s", path, error.message);
+                return null;
+            }
+        }
+
+        private async string export_application_icon (
+            Environment environment,
+            DesktopApplication application,
+            Cancellable? cancellable
+        ) throws Error {
+            var result = yield run ({
+                "environment",
+                "shell",
+                "--environment",
+                environment.id,
+                "--command",
+                "/bin/sh",
+                "--",
+                "-c",
+                APPLICATION_ICON_SCRIPT,
+                "atoms-icon",
+                application.id
+            }, null, cancellable);
+            ensure_success (result);
+            string line = result.stdout_text.strip ();
+            if (line == "")
+                return "pm.mirko.Atoms";
+            string[] fields = line.split ("\t");
+            if (fields.length != 2 || fields[0] != "png")
+                return "pm.mirko.Atoms";
+            uint8[] data = Base64.decode (fields[1]);
+            if (!valid_icon (fields[0], data))
+                return "pm.mirko.Atoms";
+
+            string name = application_export_name (environment, application.id);
+            string directory = GLib.Path.build_filename (
+                GLib.Environment.get_home_dir (),
+                ".local",
+                "share",
+                "icons",
+                "hicolor",
+                "256x256",
+                "apps"
+            );
+            if (DirUtils.create_with_parents (directory, 0755) != 0)
+                throw new CoreError.PROVIDER_FAILED ("could not create the host icon directory");
+            FileUtils.set_data (
+                GLib.Path.build_filename (directory, name + "." + fields[0]),
+                data
+            );
+            return name;
+        }
+
+        private void write_application_export (Environment environment,
+                                               DesktopApplication application,
+                                               string icon_name) throws Error {
+            string directory = GLib.Path.build_filename (
+                GLib.Environment.get_home_dir (),
+                ".local",
+                "share",
+                "applications"
+            );
+            if (DirUtils.create_with_parents (directory, 0755) != 0)
+                throw new CoreError.PROVIDER_FAILED (
+                    "could not create the host applications directory"
+                );
+
+            var key_file = new KeyFile ();
+            key_file.set_string ("Desktop Entry", "Type", "Application");
+            key_file.set_string ("Desktop Entry", "Name", application.name);
+            if (application.description != "")
+                key_file.set_string ("Desktop Entry", "Comment", application.description);
+            key_file.set_string (
+                "Desktop Entry",
+                "Exec",
+                "%s exec --provider cpak %s -- %s".printf (
+                    application_launcher (),
+                    environment.id,
+                    application.command
+                )
+            );
+            key_file.set_string ("Desktop Entry", "Icon", icon_name);
+            key_file.set_boolean ("Desktop Entry", "Terminal", false);
+            key_file.set_string ("Desktop Entry", "Categories", "Utility;");
+            key_file.set_string ("Desktop Entry", "X-Atoms-Environment", environment.id);
+            key_file.set_string ("Desktop Entry", "X-Atoms-Application", application.id);
+            size_t length;
+            string data = key_file.to_data (out length);
+            FileUtils.set_contents (
+                application_export_path (environment, application.id),
+                data,
+                (ssize_t) length
+            );
+        }
+
+        private void remove_application_export (Environment environment,
+                                                DesktopApplication application) {
+            FileUtils.remove (application_export_path (environment, application.id));
+            string name = application_export_name (environment, application.id);
+            foreach (var icon in new string[] {
+                GLib.Path.build_filename (
+                    GLib.Environment.get_home_dir (), ".local", "share", "icons",
+                    "hicolor", "scalable", "apps", name + ".svg"
+                ),
+                GLib.Path.build_filename (
+                    GLib.Environment.get_home_dir (), ".local", "share", "icons",
+                    "hicolor", "256x256", "apps", name + ".png"
+                )
+            })
+                FileUtils.remove (icon);
+        }
+
+        private string application_export_path (Environment environment,
+                                                string application_id) {
+            return GLib.Path.build_filename (
+                GLib.Environment.get_home_dir (),
+                ".local",
+                "share",
+                "applications",
+                application_export_name (environment, application_id) + ".desktop"
+            );
+        }
+
+        private string application_export_name (Environment environment,
+                                                string application_id) {
+            string digest = Checksum.compute_for_string (
+                ChecksumType.SHA256,
+                environment.id + "\n" + application_id
+            );
+            return "atoms-" + digest.substring (0, 24);
+        }
+
+        private string application_launcher () {
+            if (FileUtils.test ("/.flatpak-info", FileTest.EXISTS))
+                return "flatpak run --command=atoms-cli pm.mirko.Atoms";
+            if (GLib.Environment.get_variable ("CPAK_SYSTEM_BROKER_SOCKET") != null)
+                return "cpak run github.com/AtomsDevs/Atoms @/usr/bin/atoms-cli";
+            return "atoms-cli";
+        }
+
+        private static bool valid_application_path (string path) {
+            if (path.length > 4096 || !path.has_suffix (".desktop") ||
+                contains_control (path) || path.index_of ("/../") >= 0)
+                return false;
+            return path.has_prefix ("/usr/share/applications/") ||
+                   path.has_prefix ("/usr/local/share/applications/") ||
+                   path.index_of ("/.local/share/applications/") > 0;
+        }
+
+        private static bool valid_identifier (string value) {
+            if (value.length == 0 || value.length > 160)
+                return false;
+            foreach (uint8 character in value.data) {
+                bool letter = (character >= 'a' && character <= 'z') ||
+                              (character >= 'A' && character <= 'Z');
+                bool digit = character >= '0' && character <= '9';
+                if (!(letter || digit || character == '-' ||
+                      character == '_' || character == '.'))
+                    return false;
+            }
+            return true;
+        }
+
+        private static bool valid_icon (string suffix, uint8[] data) {
+            if (data.length == 0 || data.length > MAX_ICON_BYTES)
+                return false;
+            return suffix == "png" && data.length >= 8 &&
+                   data[0] == 0x89 && data[1] == 0x50 &&
+                   data[2] == 0x4e && data[3] == 0x47 &&
+                   data[4] == 0x0d && data[5] == 0x0a &&
+                   data[6] == 0x1a && data[7] == 0x0a;
+        }
+
+        private static bool contains_control (string value) {
+            foreach (unichar character in value.to_utf8 ()) {
+                if (character < 0x20 || character == 0x7f)
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool optional_boolean (KeyFile key_file, string key) {
+            try {
+                return key_file.get_boolean ("Desktop Entry", key);
+            } catch (Error error) {
+                return false;
+            }
+        }
+
+        private static string optional_string (KeyFile key_file, string key) {
+            try {
+                return key_file.get_string ("Desktop Entry", key);
+            } catch (Error error) {
+                return "";
+            }
+        }
+
+        private static string optional_locale_string (KeyFile key_file, string key) {
+            try {
+                return key_file.get_locale_string ("Desktop Entry", key);
+            } catch (Error error) {
+                return "";
+            }
         }
 
         private async Json.Parser load_store (Cancellable? cancellable) throws Error {
@@ -612,6 +990,11 @@ namespace Atoms {
             throw new CoreError.PROVIDER_FAILED (message);
         }
 
+        private static bool store_is_busy (CommandResult result) {
+            return !result.ok &&
+                result.stderr_text.index_of ("wal: directory is already open") >= 0;
+        }
+
         private void require_available () throws Error {
             if (!available)
                 throw new CoreError.NOT_AVAILABLE (unavailable_reason);
@@ -619,7 +1002,7 @@ namespace Atoms {
 
         private void require_environment (Environment environment) throws Error {
             require_available ();
-            if (environment.provider_id != id)
+            if (environment.provider_id != id || !valid_identifier (environment.id))
                 throw new CoreError.INVALID_DATA ("environment belongs to another provider");
         }
 
@@ -657,6 +1040,11 @@ namespace Atoms {
             return boolean_member (object, "displayX11") ||
                    boolean_member (object, "socketX11") ||
                    boolean_member (object, "socketWayland");
+        }
+
+        private static bool has_audio_permission (Json.Object object) {
+            return boolean_member (object, "socketPulseAudio") ||
+                   boolean_member (object, "deviceAlsa");
         }
 
         private static bool has_host_actions (Json.Object object) {

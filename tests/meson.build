@@ -21,6 +21,7 @@ provider_test_env.set('ATOMS_CPAK_INVALID_STORE_INDEX', meson.current_source_dir
 provider_test_env.set('ATOMS_CPAK_TEST_BINARY', fake_cpak.full_path())
 provider_test_env.set('ATOMS_CPAK_FAKE_BINARY', fake_cpak.full_path())
 provider_test_env.set('XDG_CACHE_HOME', meson.current_build_dir() / 'cache')
+provider_test_env.set('HOME', meson.current_build_dir() / 'home')
 
 test(
   'atoms-provider-cpak',

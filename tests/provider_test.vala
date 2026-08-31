@@ -190,7 +190,7 @@ private void test_application_exports () {
                                     ".local",
                                     "share",
                                     "applications",
-                                    "atoms-" + digest.substring (0, 24) + ".desktop"
+                                    "cpak-environment-" + digest + ".desktop"
                                 );
                                 string exported_data;
                                 FileUtils.get_contents (export_path, out exported_data);

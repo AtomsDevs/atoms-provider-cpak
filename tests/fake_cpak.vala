@@ -7,6 +7,30 @@ private int fail (string message) {
     return 1;
 }
 
+private string argument_value (string[] args, string name) {
+    for (int index = 1; index + 1 < args.length; index++) {
+        if (args[index] == name)
+            return args[index + 1];
+    }
+    return "";
+}
+
+private string export_path (string[] args) {
+    string environment = argument_value (args, "--environment");
+    string application = argument_value (args, "--application");
+    string digest = Checksum.compute_for_string (
+        ChecksumType.SHA256,
+        environment + "\n" + application
+    );
+    return Path.build_filename (
+        Environment.get_home_dir (),
+        ".local",
+        "share",
+        "applications",
+        "cpak-environment-" + digest + ".desktop"
+    );
+}
+
 int main (string[] args) {
     if (args.length >= 3 && args[1] == "discover" && args[2] == "list") {
         string? lock_once = Environment.get_variable ("ATOMS_CPAK_LOCK_ONCE");
@@ -65,6 +89,55 @@ int main (string[] args) {
                 }
             }
             return fail ("unsupported fake cpak environment shell");
+        case "application-exports":
+            string application = "/usr/share/applications/example.desktop";
+            string[] lookup = {
+                args[0],
+                args[1],
+                args[2],
+                "--environment",
+                argument_value (args, "--environment"),
+                "--application",
+                application
+            };
+            if (FileUtils.test (export_path (lookup), FileTest.IS_REGULAR))
+                stdout.printf ("[\"%s\"]\n", application);
+            else
+                stdout.printf ("[]\n");
+            return 0;
+        case "export-application":
+            var input = new StringBuilder ();
+            string? line;
+            while ((line = stdin.read_line ()) != null)
+                input.append (line);
+            try {
+                var parser = new Json.Parser ();
+                parser.load_from_data (input.str);
+                var root = parser.get_root ();
+                if (root == null || root.get_node_type () != Json.NodeType.OBJECT)
+                    return fail ("invalid application export");
+                var request = root.get_object ();
+                string path = export_path (args);
+                if (DirUtils.create_with_parents (Path.get_dirname (path), 0755) != 0)
+                    return fail ("could not create application export directory");
+                var key_file = new KeyFile ();
+                key_file.set_string ("Desktop Entry", "Type", "Application");
+                key_file.set_string ("Desktop Entry", "Name", request.get_string_member ("name"));
+                key_file.set_string ("Desktop Entry", "Exec", request.get_string_member ("command"));
+                key_file.set_string ("Desktop Entry", "X-cpak-Environment", argument_value (args, "--environment"));
+                key_file.set_string ("Desktop Entry", "X-cpak-Environment-Application", argument_value (args, "--application"));
+                size_t length;
+                string data = key_file.to_data (out length);
+                FileUtils.set_contents (path, data, (ssize_t) length);
+            } catch (Error error) {
+                return fail (error.message);
+            }
+            stdout.printf ("{\"application\":\"%s\",\"exported\":true}\n", argument_value (args, "--application"));
+            return 0;
+        case "unexport-application":
+            FileUtils.remove (export_path (args));
+            stdout.printf ("{\"application\":\"%s\",\"exported\":false}\n", argument_value (args, "--application"));
+            return 0;
         case "signals":
             stdout.printf ("[\"TERM\",\"KILL\"]\n");
             return 0;

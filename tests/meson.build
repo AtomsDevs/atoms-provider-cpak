@@ -1,7 +1,10 @@
 fake_cpak = executable(
   'fake-cpak',
   'fake_cpak.vala',
-  dependencies: dependency('glib-2.0')
+  dependencies: [
+    dependency('glib-2.0'),
+    dependency('json-glib-1.0')
+  ]
 )
 
 provider_test = executable(

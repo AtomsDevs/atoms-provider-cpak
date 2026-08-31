@@ -302,6 +302,7 @@ namespace Atoms {
             Cancellable? cancellable = null
         ) throws Error {
             require_environment (environment);
+            var exported = yield exported_applications (environment, cancellable);
             var result = yield run ({
                 "environment",
                 "shell",
@@ -334,7 +335,7 @@ namespace Atoms {
                     !valid_application_path (path) ||
                     !content.validate ())
                     continue;
-                var application = parse_application (environment, path, content);
+                var application = parse_application (path, content, exported.contains (path));
                 if (application != null)
                     applications.add (application);
             }
@@ -353,7 +354,16 @@ namespace Atoms {
                 throw new CoreError.INVALID_DATA ("application belongs to another provider");
 
             if (!exported) {
-                remove_application_export (environment, application);
+                var result = yield run ({
+                    "environment",
+                    "unexport-application",
+                    "--environment",
+                    environment.id,
+                    "--application",
+                    application.id,
+                    "--json"
+                }, null, cancellable);
+                ensure_success (result);
                 application.exported = false;
                 return;
             }
@@ -369,12 +379,32 @@ namespace Atoms {
             if (current == null)
                 throw new CoreError.NOT_FOUND ("application is no longer installed");
 
-            string icon_name = yield export_application_icon (
+            Bytes? icon = yield load_application_icon (
                 environment,
                 current,
                 cancellable
             );
-            write_application_export (environment, current, icon_name);
+            var request = new Json.Object ();
+            request.set_string_member ("name", current.name);
+            if (current.description != "")
+                request.set_string_member ("description", current.description);
+            request.set_string_member ("command", current.command);
+            if (icon != null) {
+                unowned uint8[] icon_data = icon.get_data ();
+                request.set_string_member ("icon_png", Base64.encode (icon_data));
+            }
+            var result = yield run ({
+                "environment",
+                "export-application",
+                "--environment",
+                environment.id,
+                "--application",
+                current.id,
+                "--application-data",
+                "-",
+                "--json"
+            }, object_data (request), cancellable);
+            ensure_success (result);
             application.exported = true;
         }
 
@@ -626,9 +656,37 @@ namespace Atoms {
             return copy;
         }
 
-        private DesktopApplication? parse_application (Environment environment,
-                                                       string path,
-                                                       string content) {
+        private async HashSet<string> exported_applications (
+            Environment environment,
+            Cancellable? cancellable
+        ) throws Error {
+            var result = yield run ({
+                "environment",
+                "application-exports",
+                "--environment",
+                environment.id,
+                "--json"
+            }, null, cancellable);
+            ensure_success (result);
+            var parser = parse (result.stdout_text, "cpak environment application exports");
+            var root = parser.get_root ();
+            if (root == null || root.get_node_type () != NodeType.ARRAY)
+                throw invalid_response ("cpak returned invalid application exports");
+            var applications = new HashSet<string> ();
+            foreach (var node in root.get_array ().get_elements ()) {
+                if (node.get_node_type () != NodeType.VALUE)
+                    throw invalid_response ("cpak returned an invalid application export");
+                string application = node.get_string ();
+                if (!valid_application_path (application))
+                    throw invalid_response ("cpak returned an invalid application identifier");
+                applications.add (application);
+            }
+            return applications;
+        }
+
+        private DesktopApplication? parse_application (string path,
+                                                       string content,
+                                                       bool exported) {
             try {
                 var key_file = new KeyFile ();
                 key_file.load_from_data (content, content.length, KeyFileFlags.NONE);
@@ -654,10 +712,7 @@ namespace Atoms {
                     description,
                     icon,
                     command,
-                    FileUtils.test (
-                        application_export_path (environment, path),
-                        FileTest.IS_REGULAR
-                    )
+                    exported
                 );
             } catch (Error error) {
                 debug ("Could not parse environment application %s: %s", path, error.message);
@@ -665,7 +720,7 @@ namespace Atoms {
             }
         }
 
-        private async string export_application_icon (
+        private async Bytes? load_application_icon (
             Environment environment,
             DesktopApplication application,
             Cancellable? cancellable
@@ -686,118 +741,14 @@ namespace Atoms {
             ensure_success (result);
             string line = result.stdout_text.strip ();
             if (line == "")
-                return "pm.mirko.Atoms";
+                return null;
             string[] fields = line.split ("\t");
             if (fields.length != 2 || fields[0] != "png")
-                return "pm.mirko.Atoms";
+                return null;
             uint8[] data = Base64.decode (fields[1]);
             if (!valid_icon (fields[0], data))
-                return "pm.mirko.Atoms";
-
-            string name = application_export_name (environment, application.id);
-            string directory = GLib.Path.build_filename (
-                GLib.Environment.get_home_dir (),
-                ".local",
-                "share",
-                "icons",
-                "hicolor",
-                "256x256",
-                "apps"
-            );
-            if (DirUtils.create_with_parents (directory, 0755) != 0)
-                throw new CoreError.PROVIDER_FAILED ("could not create the host icon directory");
-            FileUtils.set_data (
-                GLib.Path.build_filename (directory, name + "." + fields[0]),
-                data
-            );
-            return name;
-        }
-
-        private void write_application_export (Environment environment,
-                                               DesktopApplication application,
-                                               string icon_name) throws Error {
-            string directory = GLib.Path.build_filename (
-                GLib.Environment.get_home_dir (),
-                ".local",
-                "share",
-                "applications"
-            );
-            if (DirUtils.create_with_parents (directory, 0755) != 0)
-                throw new CoreError.PROVIDER_FAILED (
-                    "could not create the host applications directory"
-                );
-
-            var key_file = new KeyFile ();
-            key_file.set_string ("Desktop Entry", "Type", "Application");
-            key_file.set_string ("Desktop Entry", "Name", application.name);
-            if (application.description != "")
-                key_file.set_string ("Desktop Entry", "Comment", application.description);
-            key_file.set_string (
-                "Desktop Entry",
-                "Exec",
-                "%s exec --provider cpak %s -- %s".printf (
-                    application_launcher (),
-                    environment.id,
-                    application.command
-                )
-            );
-            key_file.set_string ("Desktop Entry", "Icon", icon_name);
-            key_file.set_boolean ("Desktop Entry", "Terminal", false);
-            key_file.set_string ("Desktop Entry", "Categories", "Utility;");
-            key_file.set_string ("Desktop Entry", "X-Atoms-Environment", environment.id);
-            key_file.set_string ("Desktop Entry", "X-Atoms-Application", application.id);
-            size_t length;
-            string data = key_file.to_data (out length);
-            FileUtils.set_contents (
-                application_export_path (environment, application.id),
-                data,
-                (ssize_t) length
-            );
-        }
-
-        private void remove_application_export (Environment environment,
-                                                DesktopApplication application) {
-            FileUtils.remove (application_export_path (environment, application.id));
-            string name = application_export_name (environment, application.id);
-            foreach (var icon in new string[] {
-                GLib.Path.build_filename (
-                    GLib.Environment.get_home_dir (), ".local", "share", "icons",
-                    "hicolor", "scalable", "apps", name + ".svg"
-                ),
-                GLib.Path.build_filename (
-                    GLib.Environment.get_home_dir (), ".local", "share", "icons",
-                    "hicolor", "256x256", "apps", name + ".png"
-                )
-            })
-                FileUtils.remove (icon);
-        }
-
-        private string application_export_path (Environment environment,
-                                                string application_id) {
-            return GLib.Path.build_filename (
-                GLib.Environment.get_home_dir (),
-                ".local",
-                "share",
-                "applications",
-                application_export_name (environment, application_id) + ".desktop"
-            );
-        }
-
-        private string application_export_name (Environment environment,
-                                                string application_id) {
-            string digest = Checksum.compute_for_string (
-                ChecksumType.SHA256,
-                environment.id + "\n" + application_id
-            );
-            return "atoms-" + digest.substring (0, 24);
-        }
-
-        private string application_launcher () {
-            if (FileUtils.test ("/.flatpak-info", FileTest.EXISTS))
-                return "flatpak run --command=atoms-cli pm.mirko.Atoms";
-            if (GLib.Environment.get_variable ("CPAK_SYSTEM_BROKER_SOCKET") != null)
-                return "cpak run github.com/AtomsDevs/Atoms @/usr/bin/atoms-cli";
-            return "atoms-cli";
+                return null;
+            return new Bytes (data);
         }
 
         private static bool valid_application_path (string path) {

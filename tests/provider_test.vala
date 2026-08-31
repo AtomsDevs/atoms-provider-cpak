@@ -177,6 +177,42 @@ private void test_invalid_store () {
     assert (async_error.message == "cpak Store has an invalid Distributions category");
 }
 
+private void test_missing_cpak () {
+    async_error = null;
+    GLib.Environment.set_variable (
+        "ATOMS_CPAK_TEST_BINARY",
+        "/missing/atoms-test-cpak",
+        true
+    );
+    string path = GLib.Environment.get_variable ("ATOMS_PROVIDER_PATH");
+    var missing_registry = new ProviderRegistry ({ path });
+    missing_registry.load ();
+    Provider missing_provider;
+    try {
+        missing_provider = missing_registry.require ("cpak");
+    } catch (Error error) {
+        critical ("%s", error.message);
+        assert_not_reached ();
+    }
+    missing_provider.list_distributions.begin (null, (object, result) => {
+        try {
+            missing_provider.list_distributions.end (result);
+        } catch (Error error) {
+            async_error = error;
+        }
+        loop.quit ();
+    });
+    loop.run ();
+    GLib.Environment.set_variable (
+        "ATOMS_CPAK_TEST_BINARY",
+        GLib.Environment.get_variable ("ATOMS_CPAK_FAKE_BINARY"),
+        true
+    );
+    assert (async_error != null);
+    assert (async_error.message ==
+        "cpak is not installed on the host. Install cpak, then reopen Atoms.");
+}
+
 int main (string[] args) {
     Test.init (ref args);
     loop = new MainLoop ();
@@ -198,5 +234,6 @@ int main (string[] args) {
     Test.add_func ("/atoms/provider-cpak/creation-progress", test_creation_progress);
     Test.add_func ("/atoms/provider-cpak/policy-round-trip", test_policy_round_trip);
     Test.add_func ("/atoms/provider-cpak/invalid-store", test_invalid_store);
+    Test.add_func ("/atoms/provider-cpak/missing-cpak", test_missing_cpak);
     return Test.run ();
 }

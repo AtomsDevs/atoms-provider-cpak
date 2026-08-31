@@ -601,6 +601,12 @@ namespace Atoms {
             if (result.ok)
                 return;
             string message = result.stderr_text.strip ();
+            if (result.exit_code == -1 &&
+                message.index_of ("No such file or directory") >= 0) {
+                throw new CoreError.NOT_AVAILABLE (
+                    "cpak is not installed on the host. Install cpak, then reopen Atoms."
+                );
+            }
             if (message == "")
                 message = "cpak exited with status %d".printf (result.exit_code);
             throw new CoreError.PROVIDER_FAILED (message);

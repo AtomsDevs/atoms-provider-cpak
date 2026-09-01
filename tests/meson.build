@@ -7,6 +7,15 @@ fake_cpak = executable(
   ]
 )
 
+fake_flatpak_spawn = executable(
+  'fake-flatpak-spawn',
+  'fake_flatpak_spawn.vala',
+  dependencies: [
+    dependency('glib-2.0'),
+    meson.get_compiler('vala').find_library('posix')
+  ]
+)
+
 provider_test = executable(
   'atoms-provider-cpak-test',
   'provider_test.vala',
@@ -23,6 +32,7 @@ provider_test_env.set('ATOMS_CPAK_STORE_INDEX', meson.current_source_dir() / 'st
 provider_test_env.set('ATOMS_CPAK_INVALID_STORE_INDEX', meson.current_source_dir() / 'store-invalid.json')
 provider_test_env.set('ATOMS_CPAK_TEST_BINARY', fake_cpak.full_path())
 provider_test_env.set('ATOMS_CPAK_FAKE_BINARY', fake_cpak.full_path())
+provider_test_env.set('ATOMS_CPAK_FAKE_FLATPAK_SPAWN', fake_flatpak_spawn.full_path())
 provider_test_env.set('XDG_CACHE_HOME', meson.current_build_dir() / 'cache')
 provider_test_env.set('HOME', meson.current_build_dir() / 'home')
 
@@ -30,5 +40,5 @@ test(
   'atoms-provider-cpak',
   provider_test,
   env: provider_test_env,
-  depends: [atoms_provider_cpak_module, fake_cpak]
+  depends: [atoms_provider_cpak_module, fake_cpak, fake_flatpak_spawn]
 )

@@ -340,7 +340,72 @@ private void test_missing_cpak () {
     );
     assert (async_error != null);
     assert (async_error.message ==
-        "cpak is not installed on the host. Install cpak, then reopen Atoms.");
+        "cpak is required to manage environments. Install it from https://cpak.it, then reopen Atoms.");
+}
+
+private void test_bundled_cpak () {
+    async_error = null;
+    string root = GLib.Path.build_filename (
+        GLib.Environment.get_user_cache_dir (),
+        "flatpak-app"
+    );
+    string binary = GLib.Path.build_filename (root, "libexec", "atoms", "cpak");
+    string flatpak_info = GLib.Path.build_filename (root, "flatpak-info");
+    DirUtils.create_with_parents (GLib.Path.get_dirname (binary), 0700);
+    try {
+        File.new_for_path (GLib.Environment.get_variable ("ATOMS_CPAK_FAKE_BINARY"))
+            .copy (File.new_for_path (binary), FileCopyFlags.OVERWRITE);
+        FileUtils.chmod (binary, 0700);
+        FileUtils.set_contents (
+            flatpak_info,
+            "[Instance]\napp-path=%s\n".printf (root)
+        );
+    } catch (Error error) {
+        critical ("%s", error.message);
+        assert_not_reached ();
+    }
+
+    GLib.Environment.unset_variable ("ATOMS_CPAK_TEST_BINARY");
+    GLib.Environment.set_variable ("CPAK_BINARY", "/missing/host/cpak", true);
+    GLib.Environment.set_variable ("ATOMS_CPAK_TEST_FLATPAK_INFO", flatpak_info, true);
+    GLib.Environment.set_variable ("ATOMS_CPAK_TEST_BUNDLED_BINARY", binary, true);
+    GLib.Environment.set_variable (
+        "ATOMS_CPAK_TEST_FLATPAK_SPAWN",
+        GLib.Environment.get_variable ("ATOMS_CPAK_FAKE_FLATPAK_SPAWN"),
+        true
+    );
+
+    string path = GLib.Environment.get_variable ("ATOMS_PROVIDER_PATH");
+    var bundled_registry = new ProviderRegistry ({ path });
+    bundled_registry.load ();
+    Provider bundled_provider;
+    try {
+        bundled_provider = bundled_registry.require ("cpak");
+    } catch (Error error) {
+        critical ("%s", error.message);
+        assert_not_reached ();
+    }
+    bundled_provider.list_environments.begin (null, (object, result) => {
+        try {
+            var environments = bundled_provider.list_environments.end (result);
+            assert (environments.size == 1);
+        } catch (Error error) {
+            async_error = error;
+        }
+        loop.quit ();
+    });
+    loop.run ();
+
+    GLib.Environment.unset_variable ("ATOMS_CPAK_TEST_FLATPAK_INFO");
+    GLib.Environment.unset_variable ("ATOMS_CPAK_TEST_BUNDLED_BINARY");
+    GLib.Environment.unset_variable ("ATOMS_CPAK_TEST_FLATPAK_SPAWN");
+    GLib.Environment.unset_variable ("CPAK_BINARY");
+    GLib.Environment.set_variable (
+        "ATOMS_CPAK_TEST_BINARY",
+        GLib.Environment.get_variable ("ATOMS_CPAK_FAKE_BINARY"),
+        true
+    );
+    assert (async_error == null);
 }
 
 int main (string[] args) {
@@ -367,5 +432,6 @@ int main (string[] args) {
     Test.add_func ("/atoms/provider-cpak/application-exports", test_application_exports);
     Test.add_func ("/atoms/provider-cpak/invalid-store", test_invalid_store);
     Test.add_func ("/atoms/provider-cpak/missing-cpak", test_missing_cpak);
+    Test.add_func ("/atoms/provider-cpak/bundled-cpak", test_bundled_cpak);
     return Test.run ();
 }

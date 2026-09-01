@@ -73,7 +73,7 @@ namespace Atoms {
             owned get {
                 return available
                     ? ""
-                    : "cpak is not installed or cannot be reached from Atoms";
+                    : unavailable_message ();
             }
         }
 
@@ -932,9 +932,7 @@ namespace Atoms {
             string message = result.stderr_text.strip ();
             if (result.exit_code == -1 &&
                 message.index_of ("No such file or directory") >= 0) {
-                throw new CoreError.NOT_AVAILABLE (
-                    "cpak is not installed on the host. Install cpak, then reopen Atoms."
-                );
+                throw new CoreError.NOT_AVAILABLE (unavailable_message ());
             }
             if (message == "")
                 message = "cpak exited with status %d".printf (result.exit_code);
@@ -1057,14 +1055,19 @@ namespace Atoms {
             if (test_binary != null)
                 return new string[] { test_binary };
             string? configured = GLib.Environment.get_variable ("CPAK_BINARY");
-            if (GLib.Environment.get_variable ("CPAK_SYSTEM_BROKER_SOCKET") != null &&
-                GLib.Environment.get_variable ("CPAK_SYSTEM_BROKER_TOKEN_FILE") != null) {
+            if (has_system_broker ()) {
                 string? broker = GLib.Environment.find_program_in_path ("cpak-host");
                 return broker == null ? new string[0] : new string[] { broker };
             }
-            if (FileUtils.test ("/.flatpak-info", FileTest.EXISTS)) {
-                string? spawn = GLib.Environment.find_program_in_path ("flatpak-spawn");
+            string flatpak_info = flatpak_info_path ();
+            if (FileUtils.test (flatpak_info, FileTest.EXISTS)) {
+                string? spawn = GLib.Environment.get_variable (
+                    "ATOMS_CPAK_TEST_FLATPAK_SPAWN"
+                ) ?? GLib.Environment.find_program_in_path ("flatpak-spawn");
                 if (spawn == null)
+                    return new string[0];
+                string binary = bundled_cpak_path (flatpak_info);
+                if (binary == "")
                     return new string[0];
                 var prefix = new ArrayList<string> ();
                 prefix.add (spawn);
@@ -1080,7 +1083,7 @@ namespace Atoms {
                     if (value != null && value != "")
                         prefix.add ("--env=%s=%s".printf (variable, value));
                 }
-                prefix.add (configured ?? "cpak");
+                prefix.add (binary);
                 var result = new string[prefix.size];
                 for (int i = 0; i < prefix.size; i++)
                     result[i] = prefix[i];
@@ -1099,6 +1102,48 @@ namespace Atoms {
                     binary = local_binary;
             }
             return binary == "" ? new string[0] : new string[] { binary };
+        }
+
+        private static string unavailable_message () {
+            if (has_system_broker ())
+                return "Atoms could not reach the cpak host service. Restart Atoms and try again.";
+            if (FileUtils.test (flatpak_info_path (), FileTest.EXISTS))
+                return "The bundled cpak executable is missing. Reinstall Atoms.";
+            return "cpak is required to manage environments. Install it from https://cpak.it, then reopen Atoms.";
+        }
+
+        private static bool has_system_broker () {
+            return GLib.Environment.get_variable ("CPAK_SYSTEM_BROKER_SOCKET") != null &&
+                GLib.Environment.get_variable ("CPAK_SYSTEM_BROKER_TOKEN_FILE") != null;
+        }
+
+        private static string flatpak_info_path () {
+            return GLib.Environment.get_variable ("ATOMS_CPAK_TEST_FLATPAK_INFO") ??
+                "/.flatpak-info";
+        }
+
+        private static string bundled_cpak_path (string flatpak_info) {
+            string sandbox_binary = GLib.Environment.get_variable (
+                "ATOMS_CPAK_TEST_BUNDLED_BINARY"
+            ) ?? "/app/libexec/atoms/cpak";
+            if (!FileUtils.test (sandbox_binary, FileTest.IS_EXECUTABLE))
+                return "";
+            try {
+                var info = new KeyFile ();
+                info.load_from_file (flatpak_info, KeyFileFlags.NONE);
+                string app_path = info.get_string ("Instance", "app-path");
+                if (!GLib.Path.is_absolute (app_path))
+                    return "";
+                return GLib.Path.build_filename (
+                    app_path,
+                    "libexec",
+                    "atoms",
+                    "cpak"
+                );
+            } catch (Error error) {
+                debug ("Could not locate bundled cpak: %s", error.message);
+                return "";
+            }
         }
     }
 }

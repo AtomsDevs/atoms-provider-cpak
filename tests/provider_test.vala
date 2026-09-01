@@ -310,6 +310,11 @@ private void test_invalid_store () {
 private void test_missing_cpak () {
     async_error = null;
     GLib.Environment.set_variable (
+        "ATOMS_CPAK_TEST_FLATPAK_INFO",
+        "/missing/atoms-test-flatpak-info",
+        true
+    );
+    GLib.Environment.set_variable (
         "ATOMS_CPAK_TEST_BINARY",
         "/missing/atoms-test-cpak",
         true
@@ -338,6 +343,7 @@ private void test_missing_cpak () {
         GLib.Environment.get_variable ("ATOMS_CPAK_FAKE_BINARY"),
         true
     );
+    GLib.Environment.unset_variable ("ATOMS_CPAK_TEST_FLATPAK_INFO");
     assert (async_error != null);
     assert (async_error.message ==
         "cpak is required to manage environments. Install it from https://cpak.it, then reopen Atoms.");
